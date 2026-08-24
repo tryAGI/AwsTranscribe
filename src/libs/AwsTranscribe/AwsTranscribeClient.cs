@@ -296,15 +296,27 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
                 "AWS Transcribe streaming chunks must be between 1 and 32768 bytes.");
         }
 
+        var endOfStreamSent = false;
         request.AudioStreamPublisher = async () =>
         {
+            if (endOfStreamSent)
+            {
+                return null!;
+            }
+
             var buffer = new byte[chunkSize];
             var read = await audioSpeechStream
                 .ReadAsync(buffer.AsMemory(0, chunkSize), cancellationToken)
                 .ConfigureAwait(false);
             if (read == 0)
             {
-                return null!;
+                // Transcribe requires one empty audio event to close the HTTP/2 input stream cleanly.
+                // Returning null immediately leaves the session open until the service's 15-second idle timeout.
+                endOfStreamSent = true;
+                return new AudioEvent
+                {
+                    AudioChunk = new MemoryStream(Array.Empty<byte>(), writable: false),
+                };
             }
 
             return new AudioEvent
