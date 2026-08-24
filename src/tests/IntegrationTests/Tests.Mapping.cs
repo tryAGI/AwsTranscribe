@@ -66,6 +66,13 @@ public partial class Tests
         items.Should().HaveCount(2);
         items[1].Speaker.Should().Be("spk_0");
 
+        var response = AwsTranscribeClient.CreateResponse([update], "standard");
+        response.Text.Should().Be("hello world");
+        response.ModelId.Should().Be("standard");
+        response.AdditionalProperties![AwsTranscribePropertyNames.Items]
+            .Should().BeAssignableTo<IReadOnlyList<AwsTranscribeItem>>()
+            .Subject.Should().HaveCount(2);
+
         result.IsPartial = true;
         AwsTranscribeClient.CreateUpdate(result, "session-id")!.Kind
             .Should().Be(SpeechToTextResponseUpdateKind.TextUpdating);

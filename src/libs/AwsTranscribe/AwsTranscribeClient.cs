@@ -106,9 +106,29 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
             }
         }
 
+        return CreateResponse(finalUpdates, GetModelId(options));
+    }
+
+    /// <summary>Aggregates final streaming updates into one Microsoft.Extensions.AI response.</summary>
+    public static SpeechToTextResponse CreateResponse(
+        IReadOnlyList<SpeechToTextResponseUpdate> finalUpdates,
+        string? modelId = null)
+    {
+        ArgumentNullException.ThrowIfNull(finalUpdates);
+
         var results = finalUpdates
             .Select(static update => update.RawRepresentation)
             .OfType<Result>()
+            .ToArray();
+        var alternatives = finalUpdates
+            .SelectMany(static update => GetAdditionalPropertyValues<AwsTranscribeAlternative>(
+                update,
+                AwsTranscribePropertyNames.Alternatives))
+            .ToArray();
+        var items = finalUpdates
+            .SelectMany(static update => GetAdditionalPropertyValues<AwsTranscribeItem>(
+                update,
+                AwsTranscribePropertyNames.Items))
             .ToArray();
         var startTimes = finalUpdates
             .Where(static update => update.StartTime.HasValue)
@@ -121,6 +141,8 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
         var properties = new AdditionalPropertiesDictionary
         {
             [AwsTranscribePropertyNames.Results] = results,
+            [AwsTranscribePropertyNames.Alternatives] = alternatives,
+            [AwsTranscribePropertyNames.Items] = items,
         };
 
         return new SpeechToTextResponse(string.Join(
@@ -128,13 +150,20 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
             finalUpdates.Select(static update => update.Text).Where(static text => !string.IsNullOrWhiteSpace(text))))
         {
             ResponseId = finalUpdates.Select(static update => update.ResponseId).FirstOrDefault(static id => id is not null),
-            ModelId = GetModelId(options),
+            ModelId = modelId,
             StartTime = startTimes.Length > 0 ? startTimes.Min() : null,
             EndTime = endTimes.Length > 0 ? endTimes.Max() : null,
             RawRepresentation = results,
             AdditionalProperties = properties,
         };
     }
+
+    private static IReadOnlyList<T> GetAdditionalPropertyValues<T>(
+        SpeechToTextResponseUpdate update,
+        string key) =>
+        update.AdditionalProperties?.TryGetValue(key, out var value) == true && value is IReadOnlyList<T> values
+            ? values
+            : [];
 
     public async IAsyncEnumerable<SpeechToTextResponseUpdate> GetStreamingTextAsync(
         Stream audioSpeechStream,
