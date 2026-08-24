@@ -79,6 +79,110 @@ public partial class Tests
     }
 
     [TestMethod]
+    public void CreateResponse_DeduplicatesRedeliveredFinalResultIdUsingLatestRepresentation()
+    {
+        var first = CreateFinalUpdate("result-1", "первая версия", 0.0, 1.0);
+        var corrected = CreateFinalUpdate("result-1", "исправленная версия", 0.0, 1.1);
+
+        var response = AwsTranscribeClient.CreateResponse([first, corrected], "standard");
+
+        response.Text.Should().Be("исправленная версия");
+        response.EndTime.Should().Be(TimeSpan.FromSeconds(1.1));
+        response.AdditionalProperties![AwsTranscribePropertyNames.Results]
+            .Should().BeAssignableTo<IReadOnlyList<Result>>()
+            .Subject.Should().ContainSingle();
+        response.AdditionalProperties[AwsTranscribePropertyNames.Items]
+            .Should().BeAssignableTo<IReadOnlyList<AwsTranscribeItem>>()
+            .Subject.Should().ContainSingle().Which.Text.Should().Be("исправленная версия");
+    }
+
+    [TestMethod]
+    public void CreateResponse_PreservesRepeatedTextFromDistinctResultIds()
+    {
+        var first = CreateFinalUpdate("result-1", "да", 0.0, 0.2);
+        var second = CreateFinalUpdate("result-2", "да", 0.3, 0.5);
+
+        var response = AwsTranscribeClient.CreateResponse([first, second]);
+
+        response.Text.Should().Be("да да");
+        response.AdditionalProperties![AwsTranscribePropertyNames.Results]
+            .Should().BeAssignableTo<IReadOnlyList<Result>>()
+            .Subject.Should().HaveCount(2);
+    }
+
+    [TestMethod]
+    public void Result_ClampsReversedProviderTimings()
+    {
+        var result = new Result
+        {
+            ResultId = "result-id",
+            IsPartial = false,
+            StartTime = 2.0,
+            EndTime = 1.0,
+            Alternatives =
+            [
+                new Alternative
+                {
+                    Transcript = "timing",
+                    Items =
+                    [
+                        new Item
+                        {
+                            Content = "timing",
+                            StartTime = 2.0,
+                            EndTime = 1.0,
+                            Type = ItemType.Pronunciation,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var update = AwsTranscribeClient.CreateUpdate(result, "session-id")!;
+
+        update.StartTime.Should().Be(TimeSpan.FromSeconds(2));
+        update.EndTime.Should().Be(update.StartTime);
+        var item = update.AdditionalProperties![AwsTranscribePropertyNames.Items]
+            .Should().BeAssignableTo<IReadOnlyList<AwsTranscribeItem>>()
+            .Subject.Should().ContainSingle().Which;
+        item.EndTime.Should().Be(item.StartTime);
+    }
+
+    private static SpeechToTextResponseUpdate CreateFinalUpdate(
+        string resultId,
+        string text,
+        double startTime,
+        double endTime)
+    {
+        var result = new Result
+        {
+            ResultId = resultId,
+            IsPartial = false,
+            StartTime = startTime,
+            EndTime = endTime,
+            Alternatives =
+            [
+                new Alternative
+                {
+                    Transcript = text,
+                    Items =
+                    [
+                        new Item
+                        {
+                            Content = text,
+                            StartTime = startTime,
+                            EndTime = endTime,
+                            Type = ItemType.Pronunciation,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        return AwsTranscribeClient.CreateUpdate(result, "session-id")!;
+    }
+
+    [TestMethod]
     public void GetService_ExposesMetadataAndOfficialClients()
     {
         using var streamingClient = new AmazonTranscribeStreamingClient(

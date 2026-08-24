@@ -116,25 +116,26 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
     {
         ArgumentNullException.ThrowIfNull(finalUpdates);
 
-        var results = finalUpdates
+        var deduplicatedUpdates = DeduplicateFinalUpdates(finalUpdates);
+        var results = deduplicatedUpdates
             .Select(static update => update.RawRepresentation)
             .OfType<Result>()
             .ToArray();
-        var alternatives = finalUpdates
+        var alternatives = deduplicatedUpdates
             .SelectMany(static update => GetAdditionalPropertyValues<AwsTranscribeAlternative>(
                 update,
                 AwsTranscribePropertyNames.Alternatives))
             .ToArray();
-        var items = finalUpdates
+        var items = deduplicatedUpdates
             .SelectMany(static update => GetAdditionalPropertyValues<AwsTranscribeItem>(
                 update,
                 AwsTranscribePropertyNames.Items))
             .ToArray();
-        var startTimes = finalUpdates
+        var startTimes = deduplicatedUpdates
             .Where(static update => update.StartTime.HasValue)
             .Select(static update => update.StartTime!.Value)
             .ToArray();
-        var endTimes = finalUpdates
+        var endTimes = deduplicatedUpdates
             .Where(static update => update.EndTime.HasValue)
             .Select(static update => update.EndTime!.Value)
             .ToArray();
@@ -147,9 +148,9 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
 
         return new SpeechToTextResponse(string.Join(
             ' ',
-            finalUpdates.Select(static update => update.Text).Where(static text => !string.IsNullOrWhiteSpace(text))))
+            deduplicatedUpdates.Select(static update => update.Text).Where(static text => !string.IsNullOrWhiteSpace(text))))
         {
-            ResponseId = finalUpdates.Select(static update => update.ResponseId).FirstOrDefault(static id => id is not null),
+            ResponseId = deduplicatedUpdates.Select(static update => update.ResponseId).FirstOrDefault(static id => id is not null),
             ModelId = modelId,
             StartTime = startTimes.Length > 0 ? startTimes.Min() : null,
             EndTime = endTimes.Length > 0 ? endTimes.Max() : null,
@@ -158,12 +159,51 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
         };
     }
 
+    private static List<SpeechToTextResponseUpdate> DeduplicateFinalUpdates(
+        IReadOnlyList<SpeechToTextResponseUpdate> finalUpdates)
+    {
+        var deduplicated = new List<SpeechToTextResponseUpdate>(finalUpdates.Count);
+        var resultIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var update in finalUpdates)
+        {
+            var resultId = GetAdditionalPropertyString(update, AwsTranscribePropertyNames.ResultId);
+            if (resultId is null)
+            {
+                // Without a provider result id there is no safe way to distinguish a duplicate
+                // delivery from a speaker genuinely repeating the same phrase.
+                deduplicated.Add(update);
+                continue;
+            }
+
+            if (resultIndexes.TryGetValue(resultId, out var existingIndex))
+            {
+                // AWS can redeliver the same finalized result. Keep its original position in the
+                // transcript, but use the latest representation in case metadata was completed.
+                deduplicated[existingIndex] = update;
+                continue;
+            }
+
+            resultIndexes[resultId] = deduplicated.Count;
+            deduplicated.Add(update);
+        }
+
+        return deduplicated;
+    }
+
     private static IReadOnlyList<T> GetAdditionalPropertyValues<T>(
         SpeechToTextResponseUpdate update,
         string key) =>
         update.AdditionalProperties?.TryGetValue(key, out var value) == true && value is IReadOnlyList<T> values
             ? values
             : [];
+
+    private static string? GetAdditionalPropertyString(
+        SpeechToTextResponseUpdate update,
+        string key) =>
+        update.AdditionalProperties?.TryGetValue(key, out var value) == true && value is string text
+            ? NullIfEmpty(text)
+            : null;
 
     public async IAsyncEnumerable<SpeechToTextResponseUpdate> GetStreamingTextAsync(
         Stream audioSpeechStream,
@@ -225,14 +265,7 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
 
         var alternatives = result.Alternatives.Select(static alternative => new AwsTranscribeAlternative(
             alternative.Transcript ?? string.Empty,
-            alternative.Items.Select(static item => new AwsTranscribeItem(
-                item.Content ?? string.Empty,
-                ToTimeSpan(item.StartTime),
-                ToTimeSpan(item.EndTime),
-                item.Confidence,
-                NullIfEmpty(item.Speaker),
-                item.Stable,
-                item.Type?.Value)).ToArray())).ToArray();
+            alternative.Items.Select(CreateItem).ToArray())).ToArray();
         if (alternatives.Length == 0)
         {
             return null;
@@ -256,6 +289,14 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
         AddIfNotEmpty(properties, AwsTranscribePropertyNames.ChannelId, result.ChannelId);
         AddIfNotEmpty(properties, AwsTranscribePropertyNames.LanguageCode, result.LanguageCode?.Value);
 
+        var updateRange = NormalizeRange(
+            result.StartTime.HasValue
+                ? ToTimeSpan(result.StartTime)
+                : startTimes.Length > 0 ? startTimes.Min() : null,
+            result.EndTime.HasValue
+                ? ToTimeSpan(result.EndTime)
+                : endTimes.Length > 0 ? endTimes.Max() : null);
+
         return new SpeechToTextResponseUpdate(primary.Text)
         {
             Kind = result.IsPartial == true
@@ -263,15 +304,24 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
                 : SpeechToTextResponseUpdateKind.TextUpdated,
             ResponseId = responseId,
             ModelId = modelId,
-            StartTime = result.StartTime.HasValue
-                ? ToTimeSpan(result.StartTime)
-                : startTimes.Length > 0 ? startTimes.Min() : null,
-            EndTime = result.EndTime.HasValue
-                ? ToTimeSpan(result.EndTime)
-                : endTimes.Length > 0 ? endTimes.Max() : null,
+            StartTime = updateRange.Start,
+            EndTime = updateRange.End,
             RawRepresentation = result,
             AdditionalProperties = properties,
         };
+    }
+
+    private static AwsTranscribeItem CreateItem(Item item)
+    {
+        var range = NormalizeRange(ToTimeSpan(item.StartTime), ToTimeSpan(item.EndTime));
+        return new AwsTranscribeItem(
+            item.Content ?? string.Empty,
+            range.Start,
+            range.End,
+            item.Confidence,
+            NullIfEmpty(item.Speaker),
+            item.Stable,
+            item.Type?.Value);
     }
 
     private static AdditionalPropertiesDictionary CreateSessionProperties(StartStreamTranscriptionResponse response)
@@ -388,9 +438,15 @@ public sealed class AwsTranscribeClient : ISpeechToTextClient
         }
     }
 
-    private static TimeSpan? ToTimeSpan(double? seconds) => seconds.HasValue
-        ? TimeSpan.FromSeconds(seconds.Value)
-        : null;
+    private static TimeSpan? ToTimeSpan(double? seconds) =>
+        seconds is { } value && double.IsFinite(value) && value >= 0
+            ? TimeSpan.FromSeconds(value)
+            : null;
+
+    private static (TimeSpan? Start, TimeSpan? End) NormalizeRange(TimeSpan? start, TimeSpan? end) =>
+        start.HasValue && end.HasValue && end.Value < start.Value
+            ? (start, start)
+            : (start, end);
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
