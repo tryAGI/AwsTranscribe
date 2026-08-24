@@ -1,0 +1,5 @@
+{
+  "exampleSourceDirectory": "src/tests/IntegrationTests/Examples",
+  "apiKeyVariableName": "regionSystemName",
+  "exampleIntro": "This example assumes `using AwsTranscribe;` is in scope, `regionSystemName` contains an AWS region such as `us-east-1`, and the standard AWS credential chain is configured."
+}
