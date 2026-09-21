@@ -12,8 +12,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AWSSDK.TranscribeService" Version="4.0.101.2" />
-    <PackageReference Include="AWSSDK.TranscribeStreaming" Version="4.0.101.6" />
+    <PackageReference Include="AWSSDK.TranscribeService" Version="4.0.102" />
+    <PackageReference Include="AWSSDK.TranscribeStreaming" Version="4.0.101.7" />
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.0" />
   </ItemGroup>
 
